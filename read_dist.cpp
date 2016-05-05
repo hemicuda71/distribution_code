@@ -188,8 +188,8 @@ double beta_sqrt_kappa_IHS(double dens, double temp, double (*sig_ex)(double),
 // From Lindsay and Stebbings 2005 for H * H+ interactions
 double charge_ex(double rel_eng) { // rel_eng in units of keV
 	const double a1 = 4.15, a2 = 0.531, a3 = 67.3;
-	// only calculate the hard tail if high enough energy
-	double tail = (rel_eng < 35.0  ? 1.0 : pow(1.0 - exp(-a3/rel_eng), 4.5));
+	// only calculate the hard tail if high enough energy (2nd term at 10%)
+	double tail = (rel_eng < 17.8698  ? 1.0 : pow(1.0 - exp(-a3/rel_eng), 4.5));
 	// there needs to be enough energy to exchange the electron
 	//double core = (rel_eng < 0.000005 ? 0.0 : (a1 - a2*log(rel_eng))); // (a1 - a2*log(0.005))(a1 - a2*log(rel_eng))
 	double core = (a1 - a2*log(rel_eng));
@@ -432,6 +432,368 @@ bool ff_bdataRead(ifstream& binfile, int type, int n, int loopidxnum,
 	
 	return good_read;
 }
+
+
+void print2vtk_v2_vspace(const char* vtkfname, vel_dist_header& h, grid_cell_sph& gc,
+	double *scalar_field[], double *vector_field[], const char *field_name[],
+	int NSF, int NVF)
+{
+	int ixr, ixt, ixp, dk, NUM_CELL_VALS, i, j, k, idx;
+	int cell_type, cell_iter = 0;
+	float x, y, z, xy;
+	int POINTS = (h.nvr+1)*(h.nvt+1)*(h.nvp+1);
+	int CELLS  = h.nvr * h.nvt * h.nvp;
+	int *cell_type_array;
+	cell_type_array = new int[CELLS];
+	int nxp[3] = {h.nvr+1, h.nvt+1, h.nvp+1}; // these 1's are very important!!!
+	int nxc[3] = {h.nvr, h.nvt, h.nvp};
+	// set up .vtk header
+	ofstream fvtk(vtkfname);
+	fvtk << "# vtk DataFile Version 3.1\n";
+	fvtk << "convert 6D neutral data from jh helio to .vtk format\n";
+	fvtk << "ASCII\n";
+	// set up POINTS header section
+	fvtk << "DATASET UNSTRUCTURED_GRID\n";
+	fvtk << "POINTS " << POINTS << " FLOAT\n";
+	
+	// Note: Many of the degenerate points are not used (origin and/or z-axis)
+	//	but for indexing purposes they are still here
+	for(ixr = 0; ixr <= h.nvr; ixr++)  // rho
+		for(ixt = 0; ixt <= h.nvt; ixt++)  // theta
+			for(ixp = 0; ixp <= h.nvp; ixp++) { // phi
+				//sph2cart(rgrid[k], tgrid[j], pgrid[i], x, y, z);
+				z  = gc.gvr[ixr] * cos(gc.gvt[ixt]);
+		  		xy = gc.gvr[ixr] * sin(gc.gvt[ixt]);
+		  		x  = xy * cos(gc.gvp[ixp]);
+		  		y  = xy * sin(gc.gvp[ixp]);
+				fvtk << x << ' ' << y << ' ' << z << endl;
+			}
+	cout << " POINTS finished\n";
+	
+	// get number of cell values
+	NUM_CELL_VALS = 0;
+	for(ixr = 0; ixr < h.nvr; ixr++) { // rho
+		for(ixt = 0; ixt < h.nvt; ixt++) { // theta
+			for(ixp = 0; ixp < h.nvp; ixp++) { // phi
+				// At origin and + z-axis
+				if( gc.gvr[ixr] < EPS && abs(gc.gvt[ixt]) < EPS ) {
+					NUM_CELL_VALS += 5; // tetra
+				// At origin and - z-axis
+				} else if( gc.gvr[ixr] < EPS && abs(gc.gvt[ixt+1] - M_PI) < EPS ) {
+					NUM_CELL_VALS += 5; // tetra
+				// At origin, but not z-axis
+				} else if( gc.gvr[ixr] < EPS ) {
+					NUM_CELL_VALS += 6; // pyramid
+				// At + z-axis, but not origin
+				} else if( abs(gc.gvt[ixt]) < EPS ) {
+					NUM_CELL_VALS += 7; // wedge
+				// At - z-axis, but not origin
+				} else if( abs(gc.gvt[ixt+1] - M_PI) < EPS ) {
+					NUM_CELL_VALS += 7; // wedge
+				// everything else
+				} else {
+					NUM_CELL_VALS += 9; // hexahedron
+				}
+			}
+		}
+	}
+	cout << " GET NUMBER OF CELL VALUES finished\n";
+	// assuming rho = [rho_min, rho_max], and full domain of theta and phi
+	// set up CELLS header section and create CELL data
+	fvtk << "\nCELLS " << CELLS << ' ' << NUM_CELL_VALS << endl;
+	for(i = 0; i < h.nvr; i++) { // rho
+		for(j = 0; j < h.nvt; j++) { // theta
+			for(k = 0; k < h.nvp; k++) { // phi
+				// we want phi to be connected at the last cell
+				dk = (k == h.nvp-1 ? 0 : k+1);
+				
+				// At origin and + z-axis
+				if( gc.gvr[i] < EPS && abs(gc.gvt[j]) < EPS ) {
+					cell_type = 10; // tetra
+					fvtk << 4;
+					fvtk << ' ' << arrayIdx3(i, 0, 0, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j, 0, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j+1, k, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j+1, dk, nxp);
+				// At origin and - z-axis
+				} else if( gc.gvr[i] < EPS && abs(gc.gvt[j+1] - M_PI) < EPS ) {
+					cell_type = 10; // tetra
+					fvtk << 4;
+					fvtk << ' ' << arrayIdx3(i, 0, 0, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j, k, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j+1, 0, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j, dk, nxp);
+				// At origin, but not z-axis
+				} else if( gc.gvr[i] < EPS ) {
+					cell_type = 14; // pyramid
+					fvtk << 5;
+					fvtk << ' ' << arrayIdx3(i+1, j+1, k, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j, k, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j, dk, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j+1, dk, nxp);
+					fvtk << ' ' << arrayIdx3(i, 0, 0, nxp);
+				// At + z-axis, but not origin
+				} else if( abs(gc.gvt[j]) < EPS ) {
+					cell_type = 13; // wedge
+					fvtk << 6;
+					fvtk << ' ' << arrayIdx3(i+1, j+1, k, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j+1, dk, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j, 0, nxp);
+					fvtk << ' ' << arrayIdx3(i, j+1, k, nxp);
+					fvtk << ' ' << arrayIdx3(i, j+1, dk, nxp);
+					fvtk << ' ' << arrayIdx3(i, j, 0, nxp);
+				// At - z-axis, but not origin
+				} else if( abs(gc.gvt[j+1] - M_PI) < EPS ) {
+					cell_type = 13; // wedge
+					fvtk << 6;
+					fvtk << ' ' << arrayIdx3(i+1, j+1, 0, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j, dk, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j, k, nxp);
+					fvtk << ' ' << arrayIdx3(i, j+1, 0, nxp);
+					fvtk << ' ' << arrayIdx3(i, j, dk, nxp);
+					fvtk << ' ' << arrayIdx3(i, j, k, nxp);
+				// everything else
+				} else {
+					cell_type = 12; // hexahedron
+					fvtk << 8;
+					fvtk << ' ' << arrayIdx3(i, j, k, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j, k, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j+1, k, nxp);
+					fvtk << ' ' << arrayIdx3(i, j+1, k, nxp);
+					fvtk << ' ' << arrayIdx3(i, j, dk, nxp);          
+					fvtk << ' ' << arrayIdx3(i+1, j, dk, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j+1, dk, nxp);          
+					fvtk << ' ' << arrayIdx3(i, j+1, dk, nxp);
+				}
+
+				fvtk << endl;
+				cell_type_array[cell_iter] = cell_type;
+				cell_iter++;
+			}
+		}
+	}
+	
+	fvtk << "\nCELL_TYPES " << CELLS << endl;
+	for(k=0; k < CELLS; k++)
+		fvtk << cell_type_array[k] << endl; 
+	cout << " CELLS finished\n";
+	delete[] cell_type_array;
+
+	// set up the data
+	// Scalar data
+	fvtk << "\nCELL_DATA " << CELLS << endl;
+	for(i = 0; i < NSF; i++) {
+		fvtk << "SCALARS " << field_name[i] << " FLOAT\n";
+		fvtk << "LOOKUP_TABLE default\n";
+		for(ixr = 0; ixr < h.nvr; ixr++) { // rho
+			for(ixt = 0; ixt < h.nvt; ixt++) { // theta
+				for(ixp = 0; ixp < h.nvp; ixp++) { // phi
+					idx = arrayIdx3(ixr, ixt, ixp, nxc);
+					fvtk << scalar_field[i][idx] << endl;
+				}
+			}
+		}
+		cout << ' ' <<  field_name[i] << " data finished\n";
+	}
+	// Vector data
+	for(i = 0; i < NVF; i++) {
+		fvtk << "VECTORS " << field_name[NSF+i] << " FLOAT\n";
+		for(ixr = 0; ixr < h.nvr; ixr++) { // rho
+			for(ixt = 0; ixt < h.nvt; ixt++) { // theta
+				for(ixp = 0; ixp < h.nvp; ixp++) { // phi
+					idx = arrayIdx3(ixr, ixt, ixp, nxc);
+					fvtk << vector_field[3*i  ][idx] << ' '
+						 << vector_field[3*i+1][idx] << ' '
+						 << vector_field[3*i+2][idx] << endl;
+				}
+			}
+		}
+		cout << ' ' <<  field_name[NSF+i] << " data finished\n";
+	}
+	cout << vtkfname << " printing success!\n\n";
+	fvtk.close();
+}
+
+void print2vtk_v2(const char* vtkfname, vel_dist_header& h, grid_cell_sph& gc,
+	double *scalar_field[], double *vector_field[], const char *field_name[],
+	int NSF, int NVF)
+{
+	int ixr, ixt, ixp, dk, NUM_CELL_VALS, i, j, k, idx;
+	int cell_type, cell_iter = 0;
+	float x, y, z, xy;
+	int POINTS = (h.nxr+1)*(h.nxt+1)*(h.nxp+1);
+	int CELLS  = h.nxr * h.nxt * h.nxp;
+	int *cell_type_array;
+	cell_type_array = new int[CELLS];
+	int nxp[3] = {h.nxr+1, h.nxt+1, h.nxp+1}; // these 1's are very important!!!
+	int nxc[3] = {h.nxr, h.nxt, h.nxp};
+	// set up .vtk header
+	ofstream fvtk(vtkfname);
+	fvtk << "# vtk DataFile Version 3.1\n";
+	fvtk << "convert 6D neutral data from jh helio to .vtk format\n";
+	fvtk << "ASCII\n";
+	// set up POINTS header section
+	fvtk << "DATASET UNSTRUCTURED_GRID\n";
+	fvtk << "POINTS " << POINTS << " FLOAT\n";
+	
+	// Note: Many of the degenerate points are not used (origin and/or z-axis)
+	//	but for indexing purposes they are still here
+	for(ixr = 0; ixr <= h.nxr; ixr++)  // rho
+		for(ixt = 0; ixt <= h.nxt; ixt++)  // theta
+			for(ixp = 0; ixp <= h.nxp; ixp++) { // phi
+				//sph2cart(rgrid[k], tgrid[j], pgrid[i], x, y, z);
+				z  = gc.gxr[ixr] * cos(gc.gxt[ixt]);
+		  		xy = gc.gxr[ixr] * sin(gc.gxt[ixt]);
+		  		x  = xy * cos(gc.gvp[ixp]);
+		  		y  = xy * sin(gc.gvp[ixp]);
+				fvtk << x << ' ' << y << ' ' << z << endl;
+			}
+	cout << " POINTS finished\n";
+	
+	// get number of cell values
+	NUM_CELL_VALS = 0;
+	for(ixr = 0; ixr < h.nxr; ixr++) { // rho
+		for(ixt = 0; ixt < h.nxt; ixt++) { // theta
+			for(ixp = 0; ixp < h.nxp; ixp++) { // phi
+				// At origin and + z-axis
+				if( gc.gxr[ixr] < EPS && abs(gc.gxt[ixt]) < EPS ) {
+					NUM_CELL_VALS += 5; // tetra
+				// At origin and - z-axis
+				} else if( gc.gxr[ixr] < EPS && abs(gc.gxt[ixt+1] - M_PI) < EPS ) {
+					NUM_CELL_VALS += 5; // tetra
+				// At origin, but not z-axis
+				} else if( gc.gxr[ixr] < EPS ) {
+					NUM_CELL_VALS += 6; // pyramid
+				// At + z-axis, but not origin
+				} else if( abs(gc.gxt[ixt]) < EPS ) {
+					NUM_CELL_VALS += 7; // wedge
+				// At - z-axis, but not origin
+				} else if( abs(gc.gxt[ixt+1] - M_PI) < EPS ) {
+					NUM_CELL_VALS += 7; // wedge
+				// everything else
+				} else {
+					NUM_CELL_VALS += 9; // hexahedron
+				}
+			}
+		}
+	}
+	cout << " GET NUMBER OF CELL VALUES finished\n";
+	// assuming rho = [rho_min, rho_max], and full domain of theta and phi
+	// set up CELLS header section and create CELL data
+	fvtk << "\nCELLS " << CELLS << ' ' << NUM_CELL_VALS << endl;
+	for(i = 0; i < h.nxr; i++) { // rho
+		for(j = 0; j < h.nxt; j++) { // theta
+			for(k = 0; k < h.nxp; k++) { // phi
+				// we want phi to be connected at the last cell
+				dk = (k == h.nxp-1 ? 0 : k+1);
+				
+				// At origin and + z-axis
+				if( gc.gxr[i] < EPS && abs(gc.gxt[j]) < EPS ) {
+					cell_type = 10; // tetra
+					fvtk << 4;
+					fvtk << ' ' << arrayIdx3(i, 0, 0, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j, 0, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j+1, k, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j+1, dk, nxp);
+				// At origin and - z-axis
+				} else if( gc.gxr[i] < EPS && abs(gc.gxt[j+1] - M_PI) < EPS ) {
+					cell_type = 10; // tetra
+					fvtk << 4;
+					fvtk << ' ' << arrayIdx3(i, 0, 0, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j, k, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j+1, 0, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j, dk, nxp);
+				// At origin, but not z-axis
+				} else if( gc.gxr[i] < EPS ) {
+					cell_type = 14; // pyramid
+					fvtk << 5;
+					fvtk << ' ' << arrayIdx3(i+1, j+1, k, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j, k, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j, dk, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j+1, dk, nxp);
+					fvtk << ' ' << arrayIdx3(i, 0, 0, nxp);
+				// At + z-axis, but not origin
+				} else if( abs(gc.gxt[j]) < EPS ) {
+					cell_type = 13; // wedge
+					fvtk << 6;
+					fvtk << ' ' << arrayIdx3(i+1, j+1, k, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j+1, dk, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j, 0, nxp);
+					fvtk << ' ' << arrayIdx3(i, j+1, k, nxp);
+					fvtk << ' ' << arrayIdx3(i, j+1, dk, nxp);
+					fvtk << ' ' << arrayIdx3(i, j, 0, nxp);
+				// At - z-axis, but not origin
+				} else if( abs(gc.gxt[j+1] - M_PI) < EPS ) {
+					cell_type = 13; // wedge
+					fvtk << 6;
+					fvtk << ' ' << arrayIdx3(i+1, j+1, 0, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j, dk, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j, k, nxp);
+					fvtk << ' ' << arrayIdx3(i, j+1, 0, nxp);
+					fvtk << ' ' << arrayIdx3(i, j, dk, nxp);
+					fvtk << ' ' << arrayIdx3(i, j, k, nxp);
+				// everything else
+				} else {
+					cell_type = 12; // hexahedron
+					fvtk << 8;
+					fvtk << ' ' << arrayIdx3(i, j, k, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j, k, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j+1, k, nxp);
+					fvtk << ' ' << arrayIdx3(i, j+1, k, nxp);
+					fvtk << ' ' << arrayIdx3(i, j, dk, nxp);          
+					fvtk << ' ' << arrayIdx3(i+1, j, dk, nxp);
+					fvtk << ' ' << arrayIdx3(i+1, j+1, dk, nxp);          
+					fvtk << ' ' << arrayIdx3(i, j+1, dk, nxp);
+				}
+
+				fvtk << endl;
+				cell_type_array[cell_iter] = cell_type;
+				cell_iter++;
+			}
+		}
+	}
+	
+	fvtk << "\nCELL_TYPES " << CELLS << endl;
+	for(k=0; k < CELLS; k++)
+		fvtk << cell_type_array[k] << endl; 
+	cout << " CELLS finished\n";
+	delete[] cell_type_array;
+
+	// set up the data
+	// Scalar data
+	fvtk << "\nCELL_DATA " << CELLS << endl;
+	for(i = 0; i < NSF; i++) {
+		fvtk << "SCALARS " << field_name[i] << " FLOAT\n";
+		fvtk << "LOOKUP_TABLE default\n";
+		for(ixr = 0; ixr < h.nxr; ixr++) { // rho
+			for(ixt = 0; ixt < h.nxt; ixt++) { // theta
+				for(ixp = 0; ixp < h.nxp; ixp++) { // phi
+					idx = arrayIdx3(ixr, ixt, ixp, nxc);
+					fvtk << scalar_field[i][idx] << endl;
+				}
+			}
+		}
+		cout << ' ' <<  field_name[i] << " data finished\n";
+	}
+	// Vector data
+	for(i = 0; i < NVF; i++) {
+		fvtk << "VECTORS " << field_name[NSF+i] << " FLOAT\n";
+		for(ixr = 0; ixr < h.nxr; ixr++) { // rho
+			for(ixt = 0; ixt < h.nxt; ixt++) { // theta
+				for(ixp = 0; ixp < h.nxp; ixp++) { // phi
+					idx = arrayIdx3(ixr, ixt, ixp, nxc);
+					fvtk << vector_field[3*i  ][idx] << ' '
+						 << vector_field[3*i+1][idx] << ' '
+						 << vector_field[3*i+2][idx] << endl;
+				}
+			}
+		}
+		cout << ' ' <<  field_name[NSF+i] << " data finished\n";
+	}
+	cout << vtkfname << " printing success!\n\n";
+	fvtk.close();
+}
+
 
 void print2vtk(const char* vtkfname, vel_dist_header& h, grid_cell_sph& gc,
 	double *dens, double *velx, double *vely, double *velz,
@@ -881,7 +1243,8 @@ int read_plasma_binary(const char* pfname, vel_dist_header& h, double* pdens,
 int main() {
 	timer main_timer, vtk_timer, plasma_timer, source_timer;
 	//const char vel_dist_fname[] = "vel_dist_circ2015_4muG_HP120A.grid";
-	const char vel_dist_fname[] = "./circ2015_3muG_HP120B/vel_dist_circ2015_3muG_HP120B_FULL.grid";
+	//const char vel_dist_fname[] = "./circ2015_3muG_HP120B/vel_dist_circ2015_3muG_HP120B_FULL.grid";
+	const char vel_dist_fname[] = "./circ2015_3muG_HP120B/vel_dist_circ2015_3muG_HP120B_comp0123.grid";
 	//const char plasma_prop_fname[] = "plasma_circ2015_4muG_HP120A.plasma";
 	const char plasma_prop_fname[] = "./circ2015_3muG_HP120B/plasma_circ2015_3muG_HP120B.plasma";
 	vel_dist_header h, ph;
@@ -928,7 +1291,7 @@ int main() {
 	h.vmin   = tddata[1]; // cm/s
 	h.vmax   = tddata[2]; // cm/s
 	ff_bskipRead(vfile, 1, 2);
-	ff_bskipRead(vfile, 3, 3);
+	ff_bskipRead(vfile, 3, 3); // LISM_vx, vy, vz
 	ff_bskipRead(vfile, 1, 1);
 	cout << "Neutral distribution header:\n";
 	display_header(h);
@@ -1011,6 +1374,19 @@ int main() {
 	dvp = gc.gvp[1] - gc.gvp[0];
 	dxt = gc.gxt[1] - gc.gxt[0];
 	dxp = gc.gxp[1] - gc.gxp[0];
+
+	// get the vel space of a few positions
+	double *IHS_vspace, *OHS_vspace, *HP_vspace;
+	IHS_vspace = new double[vcells]; memset(IHS_vspace, 0, vcells*sizeof(double));
+	OHS_vspace = new double[vcells]; memset(OHS_vspace, 0, vcells*sizeof(double));
+	HP_vspace  = new double[vcells]; memset(HP_vspace , 0, vcells*sizeof(double));
+	// this line must be after the new operator is called, NOT BEFORE
+	double *vspace_array[3] = {IHS_vspace, HP_vspace, OHS_vspace}; 
+
+	double vspace_locs[3] = {93.5, 107, 122};
+	bool store_vspace = 0;
+	int vspace_count = 0;
+
 	start_timer(main_timer);
 	// Loop over all positions
 	
@@ -1021,6 +1397,21 @@ int main() {
 			for(ixp = 0; ixp < h.nxp; ixp++) {
 			  idx = arrayIdx3(ixr, ixt, ixp, nx); // index into neutral arrays
 			  vcell_count = 0;
+
+			  // // check if need to store vspace
+			  if(vspace_count < 3){
+				  if((gc.gxr[ixr] <= vspace_locs[vspace_count]
+				  && gc.gxr[ixr+1] >= vspace_locs[vspace_count])
+				  &&(gc.gxt[ixt] <= M_PI/2.0 && gc.gxt[ixt+1] >= M_PI/2.0 )
+				  &&(gc.gxp[ixp] <= 0.0 && gc.gxp[ixp+1] >= 0.0 ) ) {
+				  	store_vspace = 1;
+				  	cout << "starting to store vspace " << vspace_count << '|'
+				  	  << gc.gxr[ixr] << ' ' << vspace_locs[vspace_count] << ' ' << gc.gxr[ixr+1]
+				  	  << endl;
+				  } else {
+				  	store_vspace = 0;
+				  }
+			   }
 
 			  // Loop over velocity space
 			  for(ivr = 0; ivr < h.nvr; ivr++) {
@@ -1033,9 +1424,18 @@ int main() {
 			      ff_bskipRead(vfile, 1, 1);
 			      
 			      d3v = gc.cvr[ivr] * gc.cvr[ivr] * sin(gc.cvt[ivt]) * dv;
-			      for(ivp = 0; ivp < h.nvp; ivp++) {
-			        wd3v = dist_chunk[ivp] * d3v;
-					if(wd3v > 1.0E-32) { // avoid div by zero
+			      for(ivp = 0; ivp < h.nvp; ivp++) { 
+			        // if(ixr+ixt+ixp == 0 && ivp == 0)
+			        // 	cout << ivr << ' ' << ivt << ' ' << ivp << " | " << d3v << endl;
+					if(dist_chunk[ivp] > 0.0) { // avoid div by zero
+						wd3v = dist_chunk[ivp] * d3v;
+						// store vel space
+						if(store_vspace) {
+							//cout << vspace_count << '|'; 
+							//cout << arrayIdx3(ivr, ivt, ivp, nv) << ' ' << vcells << endl;
+							vspace_array[vspace_count][arrayIdx3(ivr, ivt, ivp, nv)] = dist_chunk[ivp];
+						}
+
 						// in units of m/s
 				  		vz  = gc.cvr[ivr] * cos(gc.cvt[ivt]);
 				  		vxy = gc.cvr[ivr] * sin(gc.cvt[ivt]);
@@ -1072,6 +1472,13 @@ int main() {
 			  	  }
 			  	}
 			  } // Finish vel space loop
+			  if(store_vspace) {
+			  	cout << "Finished storing vspace at " << vspace_locs[vspace_count]
+			  	  << "AU\n"; 
+			  	vspace_count++;
+			  	store_vspace = 0;
+			  }
+
 			  // Normalize to density (cancels out d3x)
 			  // [velocity] = [km/s]
 			  vxvar[idx] *= 1.0E-6* vcell_count / ((vcell_count-1.0)*dens[idx]);
@@ -1095,13 +1502,31 @@ int main() {
 	start_timer(vtk_timer); //"./vtk/vel_dist_circ2015_4muG_HP120A.vtk"
 	if(READ_NEUTRAL_FILE_MOMENTS)
 		print2vtk(
-		  "./vtk/vel_dist_circ2015_3muG_HP120B_FULL.vtk",
+		  "./vtk/vel_dist_circ2015_3muG_HP120B_comp0123.vtk",
+			//"./vtk/vel_dist_circ2015_3muG_HP120B_FULL.vtk",
 		  h, gc, dens, velx, vely, velz, vxvar, vyvar, vzvar, VPTR, 127);
+
+		// print vspace
+		const char *field_names[] = {"IHS_vspace", "HP_vspace", "OHS_vspace"};
+		print2vtk_v2_vspace("./vtk/vel_dist_circ2015_3muG_HP120B_FULL_Vspace_93-5_107_122AU.vtk", h, gc,
+			vspace_array, NULL, field_names, 3, 0);
+
 	if(READ_PLASMA_FILE)
-		print2vtk(
-		  //"./vtk/plasma_circ2015_4muG_HP120A.vtk",
-		  "./vtk/plasma_circ2015_3muG_HP120B.vtk",
-		  ph, pgc, pdens, pvelx, pvely, pvelz, ptemp, VPTR, VPTR, VPTR, 31);
+	{
+		// print2vtk(
+		//   //"./vtk/plasma_circ2015_4muG_HP120A.vtk",
+		//   "./vtk/plasma_circ2015_3muG_HP120B.vtk",
+		//   ph, pgc, pdens, pvelx, pvely, pvelz, ptemp, VPTR, VPTR, VPTR, 31);
+
+		double *scalar_fields[] = {pdens, ptemp};
+		double *vector_fields[] = {pvelx, pvely, pvelz};
+		const char *field_names[] = {"density", "temperature", "bulk_flow"};
+
+		print2vtk_v2("./vtk/plasma_circ2015_3muG_HP120B.vtk", ph, pgc,
+			scalar_fields, vector_fields, field_names, 2, 1);
+	}
+
+
 	current_time(vtk_timer);
 	
 	
@@ -1298,8 +1723,9 @@ int main() {
 				     // private(curvel[0], curvel[1], curvel[2], wd3v, idv)
 				      for(ivp = 0; ivp < h.nvp; ivp++) {
 				        idv = arrayIdx3(ivr, ivt, ivp, nv);
-						wd3v = vel_chunk[idv] * d3vn[idv];
-						if(wd3v > 1.0E-32) { // avoid div by zero
+						
+						if(vel_chunk[idv] > 0.0) { // avoid div by zero
+						  wd3v = vel_chunk[idv] * d3vn[idv];
 						  // current vel of vel space cell, in m/s
 						  curvel[0] = vxn[idv];
 					  	  curvel[1] = vyn[idv];
@@ -1362,7 +1788,7 @@ int main() {
 		vfile.close();
 		print2vtk(
 		  //"./vtk/plasma_circ2015_4muG_HP120A.vtk",
-		  "./vtk/plasma_circ2015_3muG_HP120B_source_terms_maxwellian_total_sqrt_no_dens_norm2.vtk",
+		  "./vtk/plasma_circ2015_3muG_HP120B_comp0123_source_terms_maxwellian_total_sqrt.vtk",
 		  ph, pgc, fdens, fvelx, fvely, fvelz, VPTR, VPTR, VPTR, fenrg, 143);
 		
 		delete[] index_p, index_n, vel_chunk, vxn, vyn, vzn, d3vn, dens_2p;
@@ -1399,10 +1825,17 @@ int main() {
 		  }
 		}
 		
-		
-		print2vtk(
-		  "./vtk/plasma_circ2015_3muG_HP120B_source_terms_jacob.vtk",
-		  ph, pgc, nchex, px, py, pz, VPTR, VPTR, VPTR, ee, 143);
+		double *scalar_fields[] = {mass, nchex, ee};
+		double *vector_fields[] = {px, py, pz};
+		const char *field_names[] =
+			{"density", "charge_exchange_count", "energy_source", "momentum_source"};
+
+		print2vtk_v2("./vtk/plasma_circ2015_3muG_HP120B_source_terms_jacob.vtk", ph, pgc,
+			scalar_fields, vector_fields, field_names, 3, 1);
+
+		// print2vtk(
+		//   "./vtk/plasma_circ2015_3muG_HP120B_source_terms_jacob.vtk",
+		//   ph, pgc, nchex, px, py, pz, VPTR, VPTR, VPTR, ee, 143);
 		
 		delete[] mass, px, py, pz, ee, nchex;
 	}
@@ -1420,6 +1853,7 @@ int main() {
 	
 	
 	delete[] dist_chunk, dens, velx, vely, velz;
+	delete[] IHS_vspace, OHS_vspace, HP_vspace;
 	delete[] vxvar, vyvar, vzvar;
 	delete[] pdens, ptemp, pvelx, pvely, pvelz;
 	delete[] fdens, fvelx, fvely, fvelz, fenrg;
